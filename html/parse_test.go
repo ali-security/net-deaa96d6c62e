@@ -518,6 +518,74 @@ func TestIssue70179(t *testing.T) {
 	}
 }
 
+func parseAndRender(t *testing.T, s string) string {
+	t.Helper()
+	doc, err := Parse(strings.NewReader(s))
+	if err != nil {
+		t.Fatalf("Parse(%q): unexpected error: %v", s, err)
+	}
+	var b bytes.Buffer
+	if err := Render(&b, doc); err != nil {
+		t.Fatalf("Render(%q): unexpected error: %v", s, err)
+	}
+	return b.String()
+}
+
+// TestDuplicateAttributeTreeConfusion checks that a repeated attribute name
+// cannot be used to build a tree that differs from the one a conforming parser
+// builds. Per WHATWG 13.2.5.33 only the first occurrence of an attribute name
+// is kept, so parsing markup that repeats a name must produce exactly what
+// parsing the same markup with the repeats stripped produces. Before the fix
+// the extra copies reached the tree construction stage, where they could flip
+// an integration point, move an element to a different parent, or simply be
+// written back out by Render.
+func TestDuplicateAttributeTreeConfusion(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// attack repeats an attribute name.
+		attack string
+		// equivalent is attack with only the first occurrence of each repeated
+		// attribute name kept: what a browser sees.
+		equivalent string
+	}{
+		{
+			"attribute smuggled through Render",
+			`<a href="/safe" href="javascript:alert(1)">x</a>`,
+			`<a href="/safe">x</a>`,
+		},
+		{
+			"uppercase duplicate smuggled through Render",
+			`<a href="/safe" HREF="javascript:alert(1)">x</a>`,
+			`<a href="/safe">x</a>`,
+		},
+		{
+			// A second encoding= would otherwise turn <annotation-xml> into an
+			// HTML integration point, parsing its content as HTML rather than
+			// as MathML.
+			"annotation-xml integration point",
+			`<math><annotation-xml encoding="application/svg+xml" encoding="text/html"><p><img src="x">`,
+			`<math><annotation-xml encoding="application/svg+xml"><p><img src="x">`,
+		},
+		{
+			// A second type= would otherwise make the <input> count as hidden,
+			// keeping it inside the table instead of foster parenting it out.
+			"input type in table",
+			`<table><input type="text" type="hidden">`,
+			`<table><input type="text">`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, want := parseAndRender(t, tc.attack), parseAndRender(t, tc.equivalent)
+			if got != want {
+				t.Errorf("repeated attribute changed the tree:\n got: %s\nwant: %s", got, want)
+			}
+			if strings.Contains(got, "javascript:alert(1)") {
+				t.Errorf("dropped attribute survived rendering: %s", got)
+			}
+		})
+	}
+}
+
 func TestDepthLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
